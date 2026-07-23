@@ -182,6 +182,48 @@ export class Kuru {
 
       const event = tryDecodeKuruEvent(KuruOrderbookAbi, change);
       if (!event) return this.erc20.changesReceipt([change]);
+      // Legitimate flip-order lifecycle events: FlipOrderUpdated and
+      // FlippedOrderCreated are emitted by the Kuru OrderBook when a maker
+      // flip-order is partially or fully filled alongside the Trade event.
+      // See https://github.com/nishuzumi/moss/issues/117
+      if (event.eventName === "FlipOrderUpdated") {
+        const data = {
+          event: "FlipOrderUpdated" as const,
+          emitter: change.address,
+          orderId: event.args.orderId.toString(),
+          size: event.args.size.toString(),
+          flippedId: null,
+          owner: null,
+          price: null,
+          flippedPrice: null,
+          isBuy: null,
+        } as const;
+        return {
+          kind: "change" as const,
+          change,
+          data,
+          text: `FlipOrderUpdated: order ${event.args.orderId} size ${event.args.size} on ${change.address}`,
+        };
+      }
+      if (event.eventName === "FlippedOrderCreated") {
+        const data = {
+          event: "FlippedOrderCreated" as const,
+          emitter: change.address,
+          orderId: event.args.orderId.toString(),
+          size: event.args.size.toString(),
+          flippedId: event.args.flippedId.toString(),
+          owner: event.args.owner,
+          price: event.args.price.toString(),
+          flippedPrice: event.args.flippedPrice.toString(),
+          isBuy: event.args.isBuy,
+        } as const;
+        return {
+          kind: "change" as const,
+          change,
+          data,
+          text: `FlippedOrderCreated: order ${event.args.orderId} flipped ${event.args.flippedId} size ${event.args.size} on ${change.address}`,
+        };
+      }
       if (event.eventName !== "Trade") {
         throw new Error(`Unexpected Change: Kuru market emitted ${event.eventName}`);
       }

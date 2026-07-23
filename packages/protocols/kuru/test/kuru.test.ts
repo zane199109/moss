@@ -240,6 +240,112 @@ describe("Kuru", () => {
     expect(receipt.changes.map(firstChange)).toEqual(changes);
   });
 
+  it("parses FlipOrderUpdated alongside Trade with identity and order assertions", async () => {
+    const { registry } = offlineRegistry();
+    const capability = await registry.action("kuru", "swap", ACCOUNT, {
+      tokenIn: USDC_ADDRESS,
+      tokenOut: AUSD_ADDRESS,
+      amountIn: "1",
+    });
+    if (capability.kind !== "capability") throw new Error("expected capability");
+
+    const flipUpdate = flipOrderUpdatedChange(MON_USDC, 1n, 500n);
+    const trade = tradeChange(MON_USDC, 1n);
+    const router = routerSwapChange(ACCOUNT, USDC_ADDRESS, AUSD_ADDRESS, 1_000_000n, 1_200_000n);
+
+    const changes = [flipUpdate, trade, router] as const;
+    const receipt = registry.parseReceipt(capability, changes);
+    expect(receipt.outcome).toEqual({
+      operation: "swap",
+      protocol: "kuru",
+      sender: ACCOUNT,
+      tokenIn: USDC_ADDRESS,
+      tokenOut: AUSD_ADDRESS,
+      amountIn: "1000000",
+      amountOut: "1200000",
+    });
+    // Identity assertion: original Change objects preserved
+    expect((receipt.changes[0] as any).change).toBe(flipUpdate);
+    expect((receipt.changes[1] as any).change).toBe(trade);
+    expect((receipt.changes[2] as any).change).toBe(router);
+    // Length and order
+    expect(receipt.changes).toHaveLength(3);
+    expect(receipt.changes.map(firstChange)).toEqual(changes);
+    // Structured data assertion
+    expect(receipt.changes[0]).toMatchObject({
+      kind: "change",
+      data: {
+        event: "FlipOrderUpdated",
+        emitter: MON_USDC,
+        orderId: "1",
+        size: "500",
+      },
+    });
+  });
+
+  it("parses FlippedOrderCreated alongside Trade with identity and order assertions", async () => {
+    const { registry } = offlineRegistry();
+    const capability = await registry.action("kuru", "swap", ACCOUNT, {
+      tokenIn: USDC_ADDRESS,
+      tokenOut: AUSD_ADDRESS,
+      amountIn: "1",
+    });
+    if (capability.kind !== "capability") throw new Error("expected capability");
+
+    const flipCreated = flippedOrderCreatedChange(MON_USDC, 1n, 2n, ACCOUNT, 500n, 10n, 9n, false);
+    const trade = tradeChange(MON_USDC, 1n);
+    const router = routerSwapChange(ACCOUNT, USDC_ADDRESS, AUSD_ADDRESS, 1_000_000n, 1_200_000n);
+
+    const changes = [flipCreated, trade, router] as const;
+    const receipt = registry.parseReceipt(capability, changes);
+    expect(receipt.outcome).toEqual({
+      operation: "swap",
+      protocol: "kuru",
+      sender: ACCOUNT,
+      tokenIn: USDC_ADDRESS,
+      tokenOut: AUSD_ADDRESS,
+      amountIn: "1000000",
+      amountOut: "1200000",
+    });
+    // Identity assertion: original Change objects preserved
+    expect((receipt.changes[0] as any).change).toBe(flipCreated);
+    expect((receipt.changes[1] as any).change).toBe(trade);
+    expect((receipt.changes[2] as any).change).toBe(router);
+    // Length and order
+    expect(receipt.changes).toHaveLength(3);
+    expect(receipt.changes.map(firstChange)).toEqual(changes);
+    // Structured data assertion
+    expect(receipt.changes[0]).toMatchObject({
+      kind: "change",
+      data: {
+        event: "FlippedOrderCreated",
+        emitter: MON_USDC,
+        orderId: "1",
+        flippedId: "2",
+        owner: ACCOUNT,
+        size: "500",
+      },
+    });
+  });
+
+  it("rejects unrelated unsupported OrderBook events from the swap Receipt", async () => {
+    const { registry } = offlineRegistry();
+    const capability = await registry.action("kuru", "swap", ACCOUNT, {
+      tokenIn: USDC_ADDRESS,
+      tokenOut: AUSD_ADDRESS,
+      amountIn: "1",
+    });
+    if (capability.kind !== "capability") throw new Error("expected capability");
+
+    // OrderCreated is a legitimate Kuru OrderBook event but should never
+    // appear in a swap trace — the parser must reject it.
+    const orderCreated = orderCreatedChange(MON_USDC, 1n, ACCOUNT, 100n, 10n, false);
+    const router = routerSwapChange(ACCOUNT, USDC_ADDRESS, AUSD_ADDRESS, 1_000_000n, 1_200_000n);
+    expect(() => registry.parseReceipt(capability, [orderCreated, router])).toThrow(
+      "Unexpected Change: Kuru market emitted OrderCreated",
+    );
+  });
+
   it("rejects API markets that the Router does not verify", async () => {
     const unverified = { ...MARKETS[0], verified: false } as MockMarket;
     const { registry } = offlineRegistry([unverified]);
@@ -673,7 +779,7 @@ function erc20Transfer(
 function eventChange(
   address: `0x${string}`,
   abi: typeof KuruRouterAbi | typeof KuruOrderbookAbi,
-  eventName: "Trade" | "KuruRouterSwap",
+  eventName: "Trade" | "KuruRouterSwap" | "FlipOrderUpdated" | "FlippedOrderCreated" | "OrderCreated",
   values: readonly unknown[],
   types: readonly string[],
 ): Change {
@@ -683,4 +789,50 @@ function eventChange(
     topics: encodeEventTopics({ abi, eventName } as never) as readonly Hex[],
     data: encodeAbiParameters(types.map((type) => ({ type })) as never, values as never),
   };
+}
+
+function flipOrderUpdatedChange(address: `0x${string}`, orderId: bigint, size: bigint): Change {
+  return eventChange(
+    address,
+    KuruOrderbookAbi,
+    "FlipOrderUpdated",
+    [orderId, size],
+    ["uint40", "uint96"],
+  );
+}
+
+function flippedOrderCreatedChange(
+  address: `0x${string}`,
+  orderId: bigint,
+  flippedId: bigint,
+  owner: `0x${string}`,
+  size: bigint,
+  price: bigint,
+  flippedPrice: bigint,
+  isBuy: boolean,
+): Change {
+  return eventChange(
+    address,
+    KuruOrderbookAbi,
+    "FlippedOrderCreated",
+    [orderId, flippedId, owner, size, price, flippedPrice, isBuy],
+    ["uint40", "uint40", "address", "uint96", "uint32", "uint32", "bool"],
+  );
+}
+
+function orderCreatedChange(
+  address: `0x${string}`,
+  orderId: bigint,
+  owner: `0x${string}`,
+  size: bigint,
+  price: bigint,
+  isBuy: boolean,
+): Change {
+  return eventChange(
+    address,
+    KuruOrderbookAbi,
+    "OrderCreated",
+    [orderId, owner, size, price, isBuy],
+    ["uint40", "address", "uint96", "uint32", "bool"],
+  );
 }
